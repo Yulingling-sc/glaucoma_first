@@ -28,7 +28,12 @@ tmp/
 finals_out/
 finals_t4_out/
 finals_weights/
+finals_pseudo/
+finals_out_log.txt
 _xlsx_dump.txt
+_i207_comments.json
+_i207_comments.md
+_pr204.json
 i207_*.json
 i207_*.md
 logs_g207v*.json

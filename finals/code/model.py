@@ -54,25 +54,31 @@ class FundusNet(nn.Module):
         return self.head(torch.cat([f, a], dim=1)).squeeze(1)
 
 
+AGE_MEAN = 58.0
+AGE_STD = 15.0
+
+
 class Ensemble:
     """加权概率平均：全部成员共用一次预处理结果（同一 cache 档位）。
 
     forward_logits 只做前向（计时用 forward），postprocess 只做 sigmoid（计时用 post）；
     predict 是两者串联，全量预测与 cost 计时因此走完全相同的数值路径。
+    年龄入模前按训练口径归一化 (age - 58) / 15（对应 train.py 的 age_tensor）。
     """
 
     def __init__(self, members, device="cuda"):
         # members: list of (FundusNet, meta dict, weight float)
         self.members = members
-        self.device = device
+        self.device = torch.device(device)
         self.ttas = {1: [0], 2: [0, 1], 4: [0, 1, 2, 3]}
         self.cache_size = members[0][1]["cache_size"]
-        self._mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
-        self._std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+        self._mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+        self._std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
 
     def forward_logits(self, tensors, ages, tta=1, use_fp16=True):
         x = torch.stack(tensors).to(self.device, non_blocking=True)
         age = torch.as_tensor(ages, dtype=torch.float32, device=self.device).view(-1, 1)
+        age = (age - AGE_MEAN) / AGE_STD
         flips = self.ttas[tta]
         out = None
         with torch.inference_mode():
@@ -88,11 +94,16 @@ class Ensemble:
                     if fl & 2:
                         xf = torch.flip(xf, dims=[2])
                     with torch.amp.autocast("cuda", dtype=torch.float16,
-                                            enabled=(use_fp16 and self.device == "cuda")):
+                                            enabled=(use_fp16 and self.device.type == "cuda")):
                         acc = acc + model(xf, age)
                 contrib = w * acc / len(flips)
                 out = contrib if out is None else out + contrib
         return out.float()
+
+    def eval(self):
+        for model, _meta, _w in self.members:
+            model.eval()
+        return self
 
     @staticmethod
     def postprocess(logits):

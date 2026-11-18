@@ -42,7 +42,13 @@
 
 ## 3. 对决赛包的影响与待办
 
-- **决赛包自身**：无需任何数值回归；`grep -rn "import cv2" code/` 为空，`requirements.txt` 仅 torch/torchvision/numpy/pillow。禁 cv2 smoke（`tools/no_cv2_smoke.py`，强制 `import cv2` 抛错）在同一包上跑通，6 图 `submission.csv` 与改动前逐行一致（max\|Δp\|=0.0）。
+- **决赛包自身**：无 cv2，`grep -rn "import cv2" code/` 为空，`requirements.txt` 无 opencv。禁 cv2 smoke
+  （`tools/no_cv2_smoke.py`，强制 `import cv2` 抛错）按官方 CLI 跑通，7 行（含 1 张缺失图）全覆盖、
+  缺失图概率 0.5。
+- **年龄口径修正（2026-11-18 晚）**：本节 2.1/2.2 的数字产生于旧包（年龄未按 `(age-58)/15` 归一化直送模型）。
+  三个变体共用同一错误年龄输入，**相对结论（cv2→PIL 的漂移量级）仍成立**，绝对概率需以当前包重跑为准。
+  修正后同一输入 20 张 ACRIMA：`max|Δp|=0.232`、`mean|Δp|=0.077`（旧包概率系统性偏低），
+  故历史包概率不得与当前包混排。
 - **#208 联动**：若候选成员概率来自历史 cv2 推理，必须用本包 `predict_batch` 重推一遍再融合；否则代理集上已出现 ~0.01 AUPRC 量级位移。
 - **官方 valid 复算（未做，阻塞）**：需要官方 valid（或 test）图片 + `valid.csv`；拿到后执行
   `python tools/pil_vs_cv2_delta.py --pkg finals --images <valid图片目录> --out ...`，

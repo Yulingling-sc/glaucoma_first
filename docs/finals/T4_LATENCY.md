@@ -53,13 +53,16 @@
    官方 test 图若比 ACRIMA 大，这两项会涨，是当前最大的不确定性。
 5. 环境差异：官方 torch 2.10.0/CUDA 12.8 vs 本表 torch 2.11.0/CUDA 13.0，conv 前后向可能差 ±10%；
    74.40ms 即使慢 15% 也 ≈85.6ms，仍低于 100ms。
+6. **适用边界（#207 P1-5）**：74.40ms 基于 ACRIMA 349px 小图，decode 仅 3.6ms；官方决赛图大概率
+   2000–3000px，`draft(768)` 解码与灰度分位 bbox 的开销都会上涨，**decode+crop 预估 +10–20ms**。
+   p95 已 103.58ms，官方按 mean 判但余量有限；拿到真实尺寸眼底图后需用 10–20 张复测一次。
 
 ## 复现
 
 - 内核：`jiahaochen7711/g207-t4-latency`（私有脚本，`tools/kaggle_finals/run.py`，单文件 v4）。
 - 一键重跑：`python -m kaggle kernels push -p tools/kaggle_finals`。
-- 包内自查（任意 GPU）：`python code/predict_and_cost.py --images ... --meta ... --out out`，
-  `out/cost.json` 与 T4 分段同结构、同一套函数。
+- 包内自查（任意 GPU）：`python code/predict_and_cost.py --data_root ... --meta ... --out_dir out`，
+  `out/cost.json` 与 T4 分段同一套函数（`avg_cost` / `avg_cost_infer`）。
 
 ## 附：cv2 审计（#207 零，2026-11-18）
 
