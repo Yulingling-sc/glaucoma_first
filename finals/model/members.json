@@ -1,0 +1,16 @@
+{
+  "members": [
+    {
+      "file": "cb384.pt",
+      "weight": 0.4
+    },
+    {
+      "file": "cs_hi512_all_fp16.pt",
+      "weight": 0.3
+    },
+    {
+      "file": "cs_hi512_all_ra.pt",
+      "weight": 0.3
+    }
+  ]
+}
