@@ -28,6 +28,8 @@ def main():
     ap.add_argument("--force-cache-size", type=int, default=0, choices=[0, 512, 768],
                     help="override the checkpoint's cache_size (0 = infer); needed when "
                          "the checkpoint carries a wrong/absent cache_size (issue #212 trap)")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from <out>.partial.npz written by an interrupted run")
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads or max(4, (os.cpu_count() or 8) - 2))
@@ -67,8 +69,17 @@ def main():
 
     acc1 = np.zeros(n, dtype=np.float64)
     acc4 = np.zeros(n, dtype=np.float64)
+    begin = 0
+    if args.resume:
+        ppath = args.out + ".partial.npz"
+        if os.path.exists(ppath):
+            z = np.load(ppath)
+            begin = int(z["done"][0])
+            acc1[:] = z["probs_tta1"][:n]
+            acc4[:] = z["probs_tta4"][:n]
+            print(f"resume: {begin}/{n} from {ppath}", flush=True)
     t0 = time.time()
-    for start in range(0, n, args.batch_size):
+    for start in range(begin, n, args.batch_size):
         idx = list(range(start, min(start + args.batch_size, n)))
         base = torch.stack([
             torchvision.transforms.functional.to_tensor(
