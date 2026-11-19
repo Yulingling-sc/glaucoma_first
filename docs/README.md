@@ -54,6 +54,13 @@
 | [HOW_TO_PR.md](HOW_TO_PR.md) | PR 提交流程规范 |
 | [TEAM_HANDOFF.md](TEAM_HANDOFF.md) | 团队交接文档 |
 
+### 决赛（#206–#208）
+| 文档 | 工单 | 备注 |
+|---|---|---|
+| [finals/MEMBERS.md](finals/MEMBERS.md) | #208 任务一 | 12 checkpoint 盘点 + 合规边界 + 缺口清单 |
+| [finals/CANDIDATES.md](finals/CANDIDATES.md) | #208 任务二 | AUPRC 主指标候选定稿（C2/C3/C1 + C0 兜底）|
+| [finals/PREPROC_PIL.md](finals/PREPROC_PIL.md) | #208 §0 | PIL 管线迁移核验（Part A/B + gate）|
+
 ## 三、维护说明
 - 新增工单归档：在 `docs/` 下新建 `ISSUE_<n>.md`，按「背景 / 配置 / 结果 / 结论 / 交付物」五段式；并在本索引对应表格登记一行。
 - 训练产物（*.pt / *_probs*.csv）**不入库**，统一通过 GitHub Release `weights-1016` 共享；仅在归档文档的「交付物」节登记文件名与位置。
