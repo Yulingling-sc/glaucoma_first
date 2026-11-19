@@ -23,3 +23,18 @@ submit_pkg/model_weights.pt
 thumbs/
 tmp/
 *.log
+
+# ===== 决赛本地测量/打包产物（不入库）=====
+finals_out/
+finals_t4_out/
+finals_weights/
+finals_pseudo/
+finals_out_log.txt
+_xlsx_dump.txt
+_i207_comments.json
+_i207_comments.md
+_pr204.json
+i207_*.json
+i207_*.md
+logs_g207v*.json
+logs_g207v*.txt
