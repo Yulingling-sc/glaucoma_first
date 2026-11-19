@@ -43,7 +43,7 @@ valid 指标有两列口径：
 |---|---|---|---|---|---|---|---|---|---|---|
 | seed2 | convnext_small | 512 | cache768 | **train-only**（seed7 热启动 hi512_v2 续训 6ep，云 4090D） | 99,844,892 | 0.99064 | **0.87503** | 0.87503 / 0.99064（单尺度，两口径一致） | 本地 npy（Release 缺 CSV） | 多样性成员（#35） |
 | cnxs384 | convnext_small | 384 | cache512 | **train-only** | 99,842,726 | 0.98994 | **0.86371** | 缺（valid 概率未归档） | 缺 | 候选可用但需先补 valid 概率 |
-| ctiny384 | convnext_tiny | 384 | cache512 | **train-only** | 56,518,009 | 0.98945 | **0.85584** | 0.85442 / 0.98559（Release npy，文件名 `ctiny512_*`，身份核验进行中） | ✅ Release `ctiny512_test_probs_tta4.csv`（命名同疑点） | 小体积多样性成员 |
+| ctiny384 | convnext_tiny | 384 | cache512 | **train-only** | 56,518,009 | 0.98945 | **0.85584** | 0.85442 / 0.98559（Release npy `ctiny512_*`——**2026-11-19 身份核验 FAIL**，与该权重不匹配，此列数字不可归属，见 PREPROC_PIL.md §4.1） | ✅ Release `ctiny512_test_probs_tta4.csv`（**命名疑点已证实**，同 §4.1） | 小体积多样性成员（如启用须重算概率） |
 | b448 | efficientnet_b3 | 448 | cache512 | **train-only** | 23,544,137 | 0.98210 | **0.82672** | 0.82673 / 0.98210（一致） | 本地 npy（Release 缺 CSV） | 分辨率多样性 |
 | b384 | efficientnet_b3 | 384 | cache512 | **train-only** | 23,547,284 | 0.98504 | **0.81592** | 0.81589 / 0.98503（一致） | 本地 npy（Release 缺 CSV） | — |
 
@@ -69,7 +69,8 @@ valid 指标有两列口径：
 4. **ra_best / ra_last 的 valid AUPRC 未归档**（只有 AUROC）：RA 单成员 fp16 ≈352.6MB，可挤进预算但 valid AUPRC 缺失，本工单暂不入候选；如需启用，先在 GPU 上补 valid TTA4 概率。
 5. **cnxs384 的 valid 概率未归档**：候选池暂不含；如需启用同样先补。
 6. **12 成员多尺度 TTA 口径差异**：ens8 缓存对 ConvNeXt 三成员为多尺度 TTA，与官方 TTA4 单尺度口径差 +0.002~+0.007（见 §1 两列）。**统一 TTA4 口径的成员概率与候选终值需 GPU 复算**（与 T4 实测同批，见 CANDIDATES.md 待办）。
-7. **PIL 管线 valid AUPRC 复算进行中**：`tools/finals_208_valid_pil.py` + `tools/finals_208_valid_cache.py`，cb384 全量 5849 张 CPU 复算，结果回填 `docs/finals/PREPROC_PIL.md`。
+7. **PIL 管线 valid AUPRC 复算进行中**：`tools/finals_208_valid_pil.py` + `tools/finals_208_valid_cache.py`，cb384 全量 5849 张 CPU 复算，结果回填 `docs/finals/PREPROC_PIL.md`。（2026-11-19 更新：cb384/ctiny384 gate 已回填 PASS，见 PREPROC_PIL.md §4；其余成员按需排队。）
+8. **Release npy `ctiny512_probs_valid_full_tta4.npy` 身份核验 FAIL**（2026-11-19，PREPROC_PIL.md §4.1）：与 ctiny384 权重不匹配（Spearman 0.783、39 处 0.5 翻转、npy 质量低于权重官方值），provenance 未定；如需启用 ctiny384（含 C1 类候选、工程一致性核对），须以本地权重重算 valid/test 概率并重新上传 Release。
 
 ## 6. 决赛实际出分包（dist3 重试包，2026-11-18 22:27:34 提交）
 
@@ -102,7 +103,7 @@ valid 指标有两列口径：
 - `predict.py::infer_cache_size` 的三级回退（ckpt 字段 → `args.cache_root` 含 768 → 文件名含 `cache768` → 默认 512）在这两个 train+all 成员上**全部失效或给错值**；对外分发若再改名，第 3 级文件名推断也断档
 - 错档后果：预处理按 512（draft768）走，而模型在 cache768（draft1152）上训练 → 输入分布漂移、概率不可信
 - **结论：部署侧不得依赖内嵌元数据或文件名推断，必须在 `members.json` 为每个成员显式写 `cache_size`/`img_size`**（dist3 重试包已按此执行；同步回 `finals/20261118` 分支由 #212 分工 JiahaoChen 执行）
-- 同类陷阱在候选侧已有一例：`ctiny512_probs_valid_full_tta4.npy` 文件名与 384 权重不一致（§2 ctiny384 行、CANDIDATES.md §1 C1 caveat）
+- 同类陷阱在候选侧已有一例：`ctiny512_probs_valid_full_tta4.npy` 文件名与 384 权重不一致（§2 ctiny384 行、CANDIDATES.md §1 C1 caveat）——**2026-11-19 核验 FAIL，C1 已作废退回 C3**（PREPROC_PIL.md §4.1）
 
 ## 7. 完整 valid ΔAUPRC gate：2 成员 vs 3 成员（ID 32301 配比）—— 非阻塞
 
