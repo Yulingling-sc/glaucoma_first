@@ -25,6 +25,9 @@ def main():
     ap.add_argument("--prep-workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=0, help="only first N rows (smoke)")
     ap.add_argument("--threads", type=int, default=0, help="torch threads (0 = auto)")
+    ap.add_argument("--force-cache-size", type=int, default=0, choices=[0, 512, 768],
+                    help="override the checkpoint's cache_size (0 = infer); needed when "
+                         "the checkpoint carries a wrong/absent cache_size (issue #212 trap)")
     args = ap.parse_args()
 
     torch.set_num_threads(args.threads or max(4, (os.cpu_count() or 8) - 2))
@@ -51,6 +54,8 @@ def main():
     print(f"rows={n}", flush=True)
 
     model, meta = P.load_model(args.weights, device)
+    if args.force_cache_size:
+        meta["cache_size"] = args.force_cache_size
     print(f"meta: {meta}", flush=True)
     cache_size = meta["cache_size"]
     draft = max(768, int(cache_size * 1.5))
