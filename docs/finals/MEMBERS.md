@@ -70,3 +70,44 @@ valid 指标有两列口径：
 5. **cnxs384 的 valid 概率未归档**：候选池暂不含；如需启用同样先补。
 6. **12 成员多尺度 TTA 口径差异**：ens8 缓存对 ConvNeXt 三成员为多尺度 TTA，与官方 TTA4 单尺度口径差 +0.002~+0.007（见 §1 两列）。**统一 TTA4 口径的成员概率与候选终值需 GPU 复算**（与 T4 实测同批，见 CANDIDATES.md 待办）。
 7. **PIL 管线 valid AUPRC 复算进行中**：`tools/finals_208_valid_pil.py` + `tools/finals_208_valid_cache.py`，cb384 全量 5849 张 CPU 复算，结果回填 `docs/finals/PREPROC_PIL.md`。
+
+## 6. 决赛实际出分包（dist3 重试包，2026-11-18 22:27:34 提交）
+
+平台记录：**ID 3453 / SubmitId 8890916，主 87.13 / 副 0.9910**（已正确评分，耗时门槛通过）。
+包 `董明坤_提交材料.zip` md5 `525e78143f972b04b8df0aea0f9e3a5e`。
+前一次提交 ID 3080（2026-11-17 22:45）评分错误 0.00：`ImportError: libxcb.so.1`（cv2 GUI wheel），
+由此全预处理迁 PIL（#207）。
+
+### 6.1 出分成员行（2 成员）
+
+| 成员 | arch / img / 真实 cache | 权重文件 | fp16 (B) | 比例 | 训练范围 |
+|---|---|---|---|---|---|
+| cb384 | convnext_base / 384 / cache512 | `convnext_base_384_cache512_1015_auprc0.8644.pt`（瘦身版） | 176,314,205 | **0.667** | train-only |
+| cs_hi512_all_ra | convnext_small / 512 / **cache_all768** | `cs_hi512_all_ra.pt`（compliant_pkg-1028 版） | 99,831,694 | **0.333** | **train+all(57245)+RA** |
+
+- 0.667/0.333 = 2/3 : 1/3 **机械归一**（2 成员等权的概率归一化），**未用 valid 调参** ✅——ra 为 train+all，规则第 3 条本就不允许调
+- 推理口径：**单解码 draft384**（draft 只降不升：3000px→750²、4096px→512²）+ **bbox/裁剪/插值全上 GPU**（uint8 上传 → gray>15 掩码 → torch.quantile）；这是 413ms 根因（双 draft 解码 1500²×2 + 双 CPU 全分辨率裁剪×2）的修复，见 `docs/finals/T4_LATENCY.md`——**其适用边界为 ACRIMA 小图（349px），官方大图 decode+crop 会涨**
+- 相对 C0 三成员（ID 32301，0.5/0.25/0.25，区域赛 98.72）：**去掉 cs_hi512_all**（省 ~200MB 与一路大解码/裁剪）换延迟达标；损失量见 §7 gate（非阻塞）
+
+### 6.2 cache_size 陷阱列（部署必须 members.json 显式覆盖）
+
+2026-11-19 用 `torch.load` 直读三份部署权重的实测元数据：
+
+| 成员（真实 cache） | 内嵌 `cache_size` 字段 | `args.cache_root` | 回退链结果 | 正确档 |
+|---|---|---|---|---|
+| cb384（512） | 无 | 无 | 文件名无 `cache768` → 默认 512，**恰好正确** | 512 ✅ |
+| cs_hi512_all（768） | 无（fp16 瘦身剥离） | 无 | 默认 512 | **768 ❌** |
+| cs_hi512_all_ra（768） | **512（slim 工具写入的错值）** | 无 | 第 1 级读到错值 512 | **768 ❌** |
+
+- `predict.py::infer_cache_size` 的三级回退（ckpt 字段 → `args.cache_root` 含 768 → 文件名含 `cache768` → 默认 512）在这两个 train+all 成员上**全部失效或给错值**；对外分发若再改名，第 3 级文件名推断也断档
+- 错档后果：预处理按 512（draft768）走，而模型在 cache768（draft1152）上训练 → 输入分布漂移、概率不可信
+- **结论：部署侧不得依赖内嵌元数据或文件名推断，必须在 `members.json` 为每个成员显式写 `cache_size`/`img_size`**（dist3 重试包已按此执行；同步回 `finals/20261118` 分支由 #212 分工 JiahaoChen 执行）
+- 同类陷阱在候选侧已有一例：`ctiny512_probs_valid_full_tta4.npy` 文件名与 384 权重不一致（§2 ctiny384 行、CANDIDATES.md §1 C1 caveat）
+
+## 7. 完整 valid ΔAUPRC gate：2 成员 vs 3 成员（ID 32301 配比）—— 非阻塞
+
+- 方法：cb384 / cs_hi512_all / cs_hi512_all_ra 三成员 **PIL 直推全量 valid**（5849 张，TTA1+TTA4 一次跑完，
+  `tools/finals_208_valid_pil.py --force-cache-size`，512/768 各归其位——即 §6.2 陷阱修正后的口径），CPU 2 路并行；
+  对比 blend2 = 0.667·cb384 + 0.333·ra 与 blend3 = 0.5·cb384 + 0.25·cs_all + 0.25·ra
+- 口径注意：两个 blend 都含 train+all 成员，valid 指标偏乐观；**只回答"去掉 cs_hi512_all 损失多少"，不用于任何调参**（规则第 3 条）
+- 状态：⏳ 运行中（2026-11-19 启动，完成后回填本节并同步 #212）
