@@ -32,11 +32,11 @@ cs_hi512_all_ra｜99,831,694 B｜5a04ebe3152416022b0e07c9d42f7af57532b9cb366771c
 A6 = """cb384：valid TTA4 AUROC 0.99117 / AUPRC 0.86439（weights-1016 记录）
 cs_hi512_all：train+all 家族成员，check PASS
 cs_hi512_all_ra：check PASS 0.9132（历史最高成员）
-集合（0.4/0.3/0.3，TTA1）valid 指标与决赛 AUPRC 预期由 #208 定稿回填；本表不重复登记。"""
+集合（0.5/0.25/0.25，TTA1 = dist4 最终配比）valid gate：blend3 0.89797 vs blend2 0.88463（ΔAUPRC +0.01334；全量 PIL 直推复算，含 train+all 成员偏乐观，仅工程核对，见 docs/finals/MEMBERS.md §7）；线上 dist4 = 87.19 / 0.9912（ID 3764）。"""
 
 E1 = """最终 3 成员包（cb384 + cs_hi512_all + cs_hi512_all_ra）不含任何测试集统计量、不含跨图归一化参数、不含测试伪标签；预处理逐图独立（code/utils/preprocess.py）。"""
 
-E2 = """3 模型加权概率平均（0.4/0.3/0.3，见 model/members.json），TTA1（单尺度单次前向）；计时 batch=1，全量预测 batch=32；BN 保持 eval 模式（不更新 running stats）。"""
+E2 = """3 模型加权概率平均（0.5/0.25/0.25，见 model/members.json，区域赛 ID 32301 锁定配比），TTA1（单尺度单次前向）；计时 batch=1，全量预测 batch=32；BN 保持 eval 模式（不更新 running stats）。"""
 
 F2 = """cost 路径与全量预测调用同一组函数（code/predict_and_cost.py 的 preprocess / predict_batch）：本地 6 张连续两次运行 max|Δp| = 0.0（≤1e-3），二值判定一致；官方逐张比对待决赛复测。"""
 
@@ -66,7 +66,7 @@ def main():
     wrap = Alignment(wrap_text=True, vertical="top")
 
     ws = wb["说明"]
-    ws.cell(4, 2).value = "2026-11-18"
+    ws.cell(4, 2).value = "2026-11-21"
     ws.cell(5, 2).value = "@JiahaoChen-star-JJ（执行）｜对应工单 #207"
     ws.cell(6, 2).value = ("cb384（ConvNeXt-Base@384）+ cs_hi512_all（ConvNeXt-Small@512）"
                            "+ cs_hi512_all_ra（ConvNeXt-Small@512 RA），统一入口 code/predict_and_cost.py")
@@ -89,7 +89,7 @@ def main():
         ws.cell(7, 2).value = "推理精度（valid）"
     ws.cell(7, 3).value = A6
     ws.cell(7, 3).alignment = wrap
-    ws.cell(7, 4).value = "部分待 #208 回填"
+    ws.cell(7, 4).value = "已核实｜集合 gate 见 docs/finals/MEMBERS.md §7（#215）"
 
     ws = wb["B-C-D 数据申明"]
     ws.cell(3, 3).value = ("最终 3 成员包未使用任何测试集标签或伪标签；test.csv 仅用于推理出概率。"
