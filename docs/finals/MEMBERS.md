@@ -72,9 +72,17 @@ valid 指标有两列口径：
 7. **PIL 管线 valid AUPRC 复算进行中**：`tools/finals_208_valid_pil.py` + `tools/finals_208_valid_cache.py`，cb384 全量 5849 张 CPU 复算，结果回填 `docs/finals/PREPROC_PIL.md`。（2026-11-19 更新：cb384/ctiny384 gate 已回填 PASS，见 PREPROC_PIL.md §4；其余成员按需排队。）
 8. **Release npy `ctiny512_probs_valid_full_tta4.npy` 身份核验 FAIL**（2026-11-19，PREPROC_PIL.md §4.1）：与 ctiny384 权重不匹配（Spearman 0.783、39 处 0.5 翻转、npy 质量低于权重官方值），provenance 未定；如需启用 ctiny384（含 C1 类候选、工程一致性核对），须以本地权重重算 valid/test 概率并重新上传 Release。
 
-## 6. 决赛实际出分包（dist3 重试包，2026-11-18 22:27:34 提交）
+## 6. 决赛实际出分包（dist3 重试包 2026-11-18 提交；**终版 = dist4，见 §6.0**）
 
-平台记录：**ID 3453 / SubmitId 8890916，主 87.13 / 副 0.9910**（已正确评分，耗时门槛通过）。
+### 6.0 终版声明与 draft 档位判决（#215 B.2，2026-11-21）
+
+- **最终出分包 = dist4**：`董明坤_提交材料.zip`（475.9MB），**ID 3764 / SubmitId 8891227，主 87.19 / 副 0.9912**（首测 103ms 判耗时失败 → 平台重评分出分），包 md5 `709eb0895d9ecb815476e556eb175c3d`。
+- dist4 配置：3 成员 cb384 / cs_hi512_all_fp16 / cs_hi512_all_ra = **0.5/0.25/0.25**（ID 32301 配比，未用 valid 调参——含 train+all 成员本不允许调），单解码 draft384 + GPU bbox/裁剪/插值，TTA1，PIL 无 cv2；members.json 显式 cache_size/img_size/tta（§6.2 陷阱修正已在包内落实，见 `finals/20261118` 分支）。
+- **draft 档位判决**：draft384 = 87.19（ID 3764）vs draft250 = 86.95（ID 4031，dist8：draft250 + fp16 权重存储 + channels_last，门禁干净通过）→ **−0.24**；dist7（draft250，122ms 未评分，判定平台抖动）旁证。**服务口径定格 draft384，禁止再降档。**
+- 权重溯源注：dist4 的 cb384 = weights-1016 Release 资产本体（176,328,125 B，sha256 `a389f41c…`，与包内 SHA256SUMS.txt 一致）；dist3 所用为本仓库另一瘦身产物（176,314,205 B）。同一 ckpt（auprc0.8644）的两种 slim 产物，dist3/dist4 各自自洽。
+- 本节其余小节（§6.1/§6.2）保留 dist3（2 成员 0.667/0.333 版，87.13/0.9910）作为历史记录。
+
+平台记录（dist3）：**ID 3453 / SubmitId 8890916，主 87.13 / 副 0.9910**（已正确评分，耗时门槛通过）。
 包 `董明坤_提交材料.zip` md5 `525e78143f972b04b8df0aea0f9e3a5e`。
 前一次提交 ID 3080（2026-11-17 22:45）评分错误 0.00：`ImportError: libxcb.so.1`（cv2 GUI wheel），
 由此全预处理迁 PIL（#207）。
@@ -105,10 +113,31 @@ valid 指标有两列口径：
 - **结论：部署侧不得依赖内嵌元数据或文件名推断，必须在 `members.json` 为每个成员显式写 `cache_size`/`img_size`**（dist3 重试包已按此执行；同步回 `finals/20261118` 分支由 #212 分工 JiahaoChen 执行）
 - 同类陷阱在候选侧已有一例：`ctiny512_probs_valid_full_tta4.npy` 文件名与 384 权重不一致（§2 ctiny384 行、CANDIDATES.md §1 C1 caveat）——**2026-11-19 核验 FAIL，C1 已作废退回 C3**（PREPROC_PIL.md §4.1）
 
-## 7. 完整 valid ΔAUPRC gate：2 成员 vs 3 成员（ID 32301 配比）—— 非阻塞
+### 6.3 核验材料与数据申明 xlsx ↔ dist4 一致性抽查（#215 B.3，2026-11-21）
+
+对照 `finals/20261118` 分支 `SHA256SUMS.txt` + `model/members.json` + 台账终版（SUBMISSIONS_LOG）：
+
+| 检查项 | 结果 |
+|---|---|
+| 三权重 sha256/大小 vs SHA256SUMS.txt | ✅ 逐字节一致：cb384 `a389f41c…` / 176,328,125 B；cs_hi512_all_fp16 `3e04d190…` / 199,660,651 B；cs_hi512_all_ra `5a04ebe3…` / 99,831,694 B；合计 475,820,470 B ↔ 台账 475.9MB / 475.82MB |
+| members.json 配比与显式覆盖 | ✅ 0.5/0.25/0.25 + cache_size/img_size/tta（cb384 512/384/1；两个 small 768/512/1）——§6.2 陷阱修正落实 |
+| **xlsx 配比声明** | ❌ **E 表 C3 与 A 表 C7 仍为旧包口径 0.4/0.3/0.3**（xlsx 生成于 10-28 旧 3 成员包时代，未随 dist4 更新） |
+| xlsx 其余声明（T4 实测 74.40ms、SHA256、包体大小、无测试统计量） | ✅ 与 dist4 一致 |
+
+**修复**：PR #218（→ `finals/20261118` 分支）——`tools/finals_xlsx.py` E2/A6 改 0.5/0.25/0.25 并回填 §7 gate 终值与 dist4 线上成绩，重新生成 xlsx（逐单元格 diff 恰 4 处预期变更，T4 实测 / SHA256 / 大小全部不变）。
+
+## 7. 完整 valid ΔAUPRC gate：blend2（dist3）vs blend3（dist4 终版配比）—— 已完成（2026-11-19）
 
 - 方法：cb384 / cs_hi512_all / cs_hi512_all_ra 三成员 **PIL 直推全量 valid**（5849 张，TTA1+TTA4 一次跑完，
-  `tools/finals_208_valid_pil.py --force-cache-size`，512/768 各归其位——即 §6.2 陷阱修正后的口径），CPU 2 路并行；
+  `tools/finals_208_valid_pil.py --force-cache-size`，512/768 各归其位——即 §6.2 陷阱修正后的口径），CPU 2 路并行（11-19 完成；中断后经 `--resume` 续跑）；
   对比 blend2 = 0.667·cb384 + 0.333·ra 与 blend3 = 0.5·cb384 + 0.25·cs_all + 0.25·ra
 - 口径注意：两个 blend 都含 train+all 成员，valid 指标偏乐观；**只回答"去掉 cs_hi512_all 损失多少"，不用于任何调参**（规则第 3 条）
-- 状态：⏳ 运行中（2026-11-19 启动，完成后回填本节并同步 #212）
+
+| blend | 配比 | 对应包 | valid AUPRC (TTA1) | valid AUROC (TTA1) | valid AUPRC (TTA4) | valid AUROC (TTA4) |
+|---|---|---|---|---|---|---|
+| blend2 | 0.667·cb384 + 0.333·ra | dist3（ID 3453，87.13 / 0.9910） | 0.88463 | 0.99328 | 0.88731 | 0.99329 |
+| **blend3** | **0.5·cb384 + 0.25·cs_all + 0.25·ra** | **dist4（ID 3764，87.19 / 0.9912，终版）** | **0.89797** | **0.99404** | **0.89927** | **0.99406** |
+
+- **ΔAUPRC（blend3 − blend2）= +0.01334（TTA1）/ +0.01196（TTA4）**：cs_all 贡献显著为正，与平台方向一致（dist4 87.19 vs dist3 87.13 = +0.06）→ **dist4 配比选择被 gate 验证**。
+- 成员单模（PIL 直推，train+all 两名成员指标偏乐观，仅作概率合理性/一致性记录，不作 gate）：cb384 TTA1 0.99063/0.86145、TTA4 0.99148/0.86739（vs 官方 0.99117/0.86439，gate PASS 见 PREPROC_PIL.md §4）；cs_hi512_all TTA1 0.99515/0.92162、TTA4 0.99565/0.92315；cs_hi512_all_ra TTA1 0.99387/0.90244、TTA4 0.99397/0.90680。三成员概率 0 NaN、分布合理（mean 0.032–0.047，阳性率 3.27% 量级）。
+- **#216 TTA2-cb 引用注意**：blend2 TTA4 0.88731 vs TTA1 0.88463 的 +0.27pp 是**两名成员都做 4 翻转**的口径；dist11 彩票包是**仅 cb384 加 hflip（TTA2）**且配比不同（0.5/0.25/0.25）。TTA2-cb 的全量 valid 精确复算（`--tta2` 输出）见 #216 评论。
