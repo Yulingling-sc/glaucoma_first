@@ -52,7 +52,6 @@ sys.path.insert(0, HERE)
 
 from model import Ensemble, FundusNet  # noqa: E402
 from utils import AGE_MEDIAN, clean_age  # noqa: E402
-from utils.preprocess import crop_resize  # noqa: E402
 from utils.weights import load_checkpoint  # noqa: E402
 
 
@@ -66,14 +65,19 @@ COST_WARMUP = 5          # 阶段一预热张数（不计时）
 COST_SEED = 2026         # 阶段一抽样随机种子
 
 # 选手配置（固定, 不从命令行传入）
-CACHE_SIZE = 512         # 训练缓存分辨率, 与权重一致
-DRAFT = max(768, int(CACHE_SIZE * 1.5))  # JPEG draft 解码目标边, 与训练缓存一致
-TTA = 1                  # 单尺度单次前向
+# 3 成员 = 区域赛锁定配比 0.5/0.25/0.25（平台 ID 32301 / LB 98.72）+ TTA1（#215 定稿）。
+# 预处理：**单次 draft384 解码**，bbox/裁剪/插值全部在 GPU 上做（#211 dist3/dist4 lineage）。
+# cache_size/img_size 是训练口径，slim 权重内嵌元数据不可靠（ra 写成 512），由
+# model/members.json 显式覆盖；tta 为每成员独立配置（#216：仅 cb384 用 TTA2）。
+DRAFT_TARGET = 384
 MEMBERS = [
-    ("cb384.pt", 0.40),
-    ("cs_hi512_all_fp16.pt", 0.30),
-    ("cs_hi512_all_ra.pt", 0.30),
+    ("cb384.pt", 0.50, 512, 384, 1),
+    ("cs_hi512_all_fp16.pt", 0.25, 768, 512, 1),
+    ("cs_hi512_all_ra.pt", 0.25, 768, 512, 1),
 ]
+CACHE_BY_FILE = {m[0]: m[2] for m in MEMBERS}
+IMG_BY_FILE = {m[0]: m[3] for m in MEMBERS}
+TTA_BY_FILE = {m[0]: m[4] for m in MEMBERS}
 
 
 # ======================================================================
@@ -85,14 +89,19 @@ MEMBERS = [
 # ======================================================================
 
 def _read_members(model_dir):
-    """model/members.json 覆盖默认成员表：{"members":[{"file":..., "weight":...}]}"""
+    """model/members.json 覆盖默认成员表：
+    {"members":[{"file":..., "weight":..., "cache_size": 512|768,
+                 "img_size": 384|512, "tta": 1|2}]}"""
     p = os.path.join(model_dir, "members.json")
     if not os.path.isfile(p):
         return None
     with open(p, encoding="utf-8") as f:
         data = json.load(f)
     items = data["members"]
-    return [(m["file"], float(m.get("weight", 1.0 / len(items)))) for m in items]
+    return [(m["file"], float(m.get("weight", 1.0 / len(items))),
+             int(m["cache_size"]) if m.get("cache_size") else None,
+             int(m["img_size"]) if m.get("img_size") else None,
+             int(m.get("tta", 1))) for m in items]
 
 
 def load_model(device):
@@ -102,47 +111,46 @@ def load_model(device):
     model_dir = os.path.join(ROOT, "model")
     members = _read_members(model_dir) or MEMBERS
     loaded = []
-    for fn, w in members:
+    for fn, w, cache, img_size, tta in members:
         sd, meta = load_checkpoint(os.path.join(model_dir, fn))
+        cache = int(cache or CACHE_BY_FILE.get(fn) or meta["cache_size"])
+        img_size = int(img_size or IMG_BY_FILE.get(fn) or meta["img_size"])
+        tta = int(tta or TTA_BY_FILE.get(fn, 1))
+        meta = dict(meta, cache_size=cache, img_size=img_size, tta=tta)
         m = FundusNet(arch=meta["arch"]).to(device)
         m.load_state_dict(sd, strict=True)
+        m.to(memory_format=torch.channels_last)
         m.eval()
-        print(f"[model] {fn} arch={meta['arch']} img_size={meta['img_size']} "
-              f"cache={meta['cache_size']} use={meta['use']} w={w}", flush=True)
+        print(f"[model] {fn} arch={meta['arch']} img_size={img_size} cache={cache} "
+              f"tta={tta} use={meta['use']} w={w}", flush=True)
         loaded.append((m, meta, w))
     return Ensemble(loaded, device=device)
 
 
-def _preprocess_rgb(arr_rgb):
-    """RGB uint8 HWC -> (3, S, S) float32 [0,1] numpy（与训练缓存同一裁剪/缩放）。"""
-    arr = np.ascontiguousarray(arr_rgb)
-    return crop_resize(Image.fromarray(arr), arr, CACHE_SIZE).numpy()
-
-
 def preprocess(img_bgr):
-    """单张图预处理: BGR ndarray -> (3, S, S) float32 numpy。
-    在读图线程中执行（CPU, 不要碰 CUDA）; 逻辑与训练缓存一致：
-    灰度>15 bbox（0.2/99.8 分位）-> 居中方形 -> PIL BICUBIC。"""
+    """单张图预处理: BGR HWC uint8 -> (3,H,W) float32 [0,1] numpy。
+    只做 BGR->RGB 与 dtype 转换；bbox/裁剪/插值在 predict_batch 内由 GPU 完成。"""
     arr = np.asarray(img_bgr)
     if arr.ndim != 3 or arr.shape[2] != 3:
         raise ValueError(f"expect HxWx3 BGR image, got {arr.shape}")
-    return _preprocess_rgb(arr[..., ::-1])
+    return np.ascontiguousarray(arr[..., ::-1].transpose(2, 0, 1), dtype=np.float32) / 255.0
 
 
 def predict_batch(model, batch, device, use_fp16, meta_rows=None):
-    """对一个 batch 推理（含后处理）。batch: (B, 3, H, W) float32 CPU 张量。
-    meta_rows: 与 batch 逐行对齐的 list[dict], 字段值均为字符串。
+    """对一个 batch 推理（含预处理与后处理）。
+    batch: (B,H,W,3) uint8 或 (B,3,H,W) float [0,1] tensor/numpy —— 单次 draft384 解码结果。
+    meta_rows: 与 batch 逐行对齐的 list[dict]（取 Age）。
     返回长度 B 的 float32 numpy 数组, 取值 [0, 1]。"""
     if isinstance(batch, torch.Tensor):
-        tensors = [batch[i] for i in range(batch.shape[0])]
+        n = batch.shape[0] if batch.ndim == 4 else 1
     else:
-        tensors = [t if torch.is_tensor(t) else torch.from_numpy(np.asarray(t))
-                   for t in batch]
+        arr = np.asarray(batch)
+        n = arr.shape[0] if arr.ndim == 4 else 1
     if meta_rows is None:
-        ages = [AGE_MEDIAN] * len(tensors)
+        ages = [AGE_MEDIAN] * n
     else:
         ages = [clean_age(r.get("Age", AGE_MEDIAN)) for r in meta_rows]
-    return model.predict(tensors, ages, tta=TTA, use_fp16=use_fp16)
+    return model.predict(batch, ages, use_fp16=use_fp16)
 
 
 # ======================================================================
@@ -209,17 +217,17 @@ def resolve_image(name, data_root, index):
 
 
 def read_one(path):
-    """读 + 预处理单张图; 失败返回 None。
-    PIL JPEG draft 解码（与训练缓存同口径）, 不依赖 cv2。"""
+    """读图: PIL draft(384) 单次解码 -> HWC uint8 RGB; 失败返回 None。
+    bbox/裁剪/插值全部交给 GPU（predict_batch 内），与 dist3/dist4 出分包一致。"""
     try:
         with Image.open(str(path)) as im:
-            im.draft("RGB", (DRAFT, DRAFT))
-            arr = np.asarray(im.convert("RGB"))
+            im.draft("RGB", (DRAFT_TARGET, DRAFT_TARGET))
+            arr = np.array(im.convert("RGB"))   # 可写副本, 供 from_numpy 免拷贝告警
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            return None
     except Exception:
         return None
-    if arr.ndim != 3 or arr.shape[2] != 3:
-        return None
-    return _preprocess_rgb(arr)
+    return arr
 
 
 def run_cost(model, meta, data_root, device, use_fp16,
@@ -249,8 +257,7 @@ def run_cost(model, meta, data_root, device, use_fp16,
         arr = read_one(resolve_image(name, data_root, index))
         if arr is None:
             return None
-        x = torch.from_numpy(arr[None])      # (1, 3, H, W)
-        return predict_batch(model, x, device, use_fp16,
+        return predict_batch(model, arr[None], device, use_fp16,
                              meta_rows=[row_by_name[name]])[0]
 
     for name in warm_names:                  # warmup 不计时（首帧含 CUDA 初始化）
@@ -263,13 +270,12 @@ def run_cost(model, meta, data_root, device, use_fp16,
     for name in timed_names:                 # 端到端: 读图+预处理 → 推理+后处理
         t0 = time.perf_counter()
         try:
-            x = read_one(resolve_image(name, data_root, index))
-            if x is None:
+            arr = read_one(resolve_image(name, data_root, index))
+            if arr is None:
                 n_fail += 1
                 continue
-            xi = torch.from_numpy(x[None])
             t1 = time.perf_counter()
-            predict_batch(model, xi, device, use_fp16,
+            predict_batch(model, arr[None], device, use_fp16,
                           meta_rows=[row_by_name[name]])
         except Exception:
             n_fail += 1
@@ -335,15 +341,22 @@ def run_prediction(model, meta, data_root, out_dir, device,
     t_start = time.perf_counter()
 
     def flush():
-        """把当前攒好的 batch 送入 predict_batch（推理+后处理）, 按原索引回填结果。"""
+        """把当前攒好的 batch 送入 predict_batch（推理+后处理）, 按原索引回填结果。
+        draft 解码后各图尺寸可能不同, 按 shape 分组分别推理（组内仍成批）。"""
         nonlocal batch_idx, batch_arr
         if not batch_arr:
             return
-        x = torch.from_numpy(np.stack(batch_arr))
-        probs = predict_batch(model, x, device, use_fp16,
-                              meta_rows=[meta_rows[i] for i in batch_idx])
-        for i, p in zip(batch_idx, probs):
-            results[i] = p
+        groups = {}
+        for i, a in zip(batch_idx, batch_arr):
+            groups.setdefault(a.shape, []).append((i, a))
+        for items in groups.values():
+            items.sort(key=lambda t: t[0])
+            x = np.stack([a for _i, a in items])
+            idxs = [i for i, _a in items]
+            probs = predict_batch(model, x, device, use_fp16,
+                                  meta_rows=[meta_rows[i] for i in idxs])
+            for i, p in zip(idxs, probs):
+                results[i] = p
         batch_idx, batch_arr = [], []
 
     while done < n:

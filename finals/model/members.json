@@ -2,15 +2,24 @@
   "members": [
     {
       "file": "cb384.pt",
-      "weight": 0.4
+      "weight": 0.5,
+      "cache_size": 512,
+      "img_size": 384,
+      "tta": 1
     },
     {
       "file": "cs_hi512_all_fp16.pt",
-      "weight": 0.3
+      "weight": 0.25,
+      "cache_size": 768,
+      "img_size": 512,
+      "tta": 1
     },
     {
       "file": "cs_hi512_all_ra.pt",
-      "weight": 0.3
+      "weight": 0.25,
+      "cache_size": 768,
+      "img_size": 512,
+      "tta": 1
     }
   ]
 }
