@@ -154,7 +154,7 @@
 - `finals/` 已改为 **单解码 draft384 + GPU bbox/裁剪/插值 + 3 成员 0.5/0.25/0.25（TTA1）**，
   与线上 dist4（md5 `709eb089…`，87.19 / 0.9912）同 lineage、同体积（475.9 MB）。
 - **不承诺 md5 一致**：仓库无 dist4 原始产物，重建件为 `finals_out/陈家豪_提交材料_dist4rebuild.zip`
-  （md5 `51afc841…`，sha256 `0e815b9a…`）。出分包身份以线上 md5 为准。
+  （md5 `d02031ae…`，sha256 `23ffa27f…`，含 #218 xlsx 修复）。出分包身份以线上 md5 为准。
 - `no_cv2_smoke.py`（cv2 阻断 + 21 行含 1 张缺失图 → 0.5）：PASS；本机 5060 上
   ACRIMA 小图 avg_cost 44.9ms、2048² 合成图 73.5ms（非 T4，仅作链路自检）。
   整包单次 smoke 的绝对耗时在 60~85ms 间波动（笔记本 GPU 降频），**不作门禁依据**。
