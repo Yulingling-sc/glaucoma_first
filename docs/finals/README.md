@@ -118,12 +118,18 @@ python code/predict_and_cost.py \
 - 本机 5060 受控 A/B（同 20 图、同进程、仅切换 cb384 的 tta）：TTA1 61–65ms / TTA2-cb 84–85ms →
   **+20~23ms**；整包单次 smoke 的绝对耗时在 60–85ms 间波动（笔记本 GPU 降频），不作门禁依据。
   按 T4 的 cb384 forward 22.0ms 折算安静态 **≈ 125ms**（dist4 实测 103ms + 一次 cb384 前向），
-  大概率吃 100ms 门禁（零分数代价彩票：失败不改变 87.19，成功上限约 +0.1~0.18 分）。
+  大概率吃 100ms 门禁（零分数代价彩票：失败不改变 87.19）。
+  **2026-11-21/23 精算更正**：#216 全量 valid 与 #222 复核均为 **ΔAUPRC −0.00029**（噪声内、点估计略负），
+  原记 "成功上限 +0.1~0.18" 来自 blend2 双成员 4 翻转口径，不适用于 dist11 的 TTA2-cb ⇒ 期望按 **≈0** 计。
+  **延迟风险实测校准**：dist12（ID 4243）即以 `cb tta=2 / smalls tta=1` 出包且**被正确评分**
+  （−2.48 的根因是 #221 的 bbox 转置，非耗时）⇒ TTA2-cb 的延迟风险为**中等**，不是必死。
 
 ## 证据
 
 - `docs/finals/T4_LATENCY.md`：T4 实测（旧表为 512-native 单 cache 口径，已标注作废）；
   严格分组口径本机 5060 实测与两档 `cost.json`；#216 TTA2-cb 受控 A/B。
+- `docs/finals/BLEND_SEARCH_222.md`：#222 冲分三轴（权重/融合/TTA）成本中性候选核验与候选排序表
+  （含 test100 非方图 93% 与 draft 档位灵敏度）；机器可读 `BLEND_SEARCH_222.json`、`TIER_LEVERAGE_222.json`。
 - `docs/finals/PIL_VS_CV2.md`：PIL↔cv2 概率差与训练同源说明。
 - `tools/no_cv2_smoke.py`：屏蔽 cv2 后按官方 CLI（`--data_root/--meta/--out_dir`）跑通成品包，
   21 行全覆盖（含 1 张刻意缺失的图 → Probability=0.5），三接口签名断言通过。
