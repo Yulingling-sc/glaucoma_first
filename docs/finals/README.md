@@ -97,8 +97,9 @@ python code/predict_and_cost.py \
 ## 体积口径
 
 - 解压后 **475.9 MB**（3 成员 dist4 口径）：`finals_out/陈家豪_提交材料_dist4rebuild.zip`
-  475,933,333 B；md5 `51afc84149004e2d2f1f85e9aa8740cc`；
-  sha256 `0e815b9a9e719cbe283e43a1e257fc1d17eedc90cd9c4b5874714d4ec8c129e5`。
+  475,933,580 B；md5 `d02031aef4f799548729e9639e209302`；
+  sha256 `23ffa27fe9ee0e4657923a63f0b0f67c468d914fbb1bc6090696beddde3915ee`
+  （含 #218 xlsx 修复，包内清单 xlsx 为 `eae9b865…`）。
 - 官方写 "≤500MB"：十进制余量 **24.1 MB**；若按 500 MiB 计余量 46.1 MiB。
 - ⚠️ **重建件不等于出分包**：dist4 线上包 md5 为 `709eb0895d9ecb815476e556eb175c3d`，
   本仓库无原始产物（无 Docker/无历史 zip），只能重建到「同 lineage、同体积、同配比」，
@@ -111,8 +112,9 @@ python code/predict_and_cost.py \
 
 - 与 dist4 **唯一差异**：`model/members.json` 中 cb384 `tta=2`（原图 + 水平翻转），
   两个 small 成员保持 `tta=1`；draft384 解码、fp16 权重、channels_last 全部不变。
-- 产物：475.9 MB（475,933,068 B）；md5 `dcef9f25fc97fe42e9e3c9d8a59a6e7f`；
-  sha256 `b02dcc5f33a85dd57f6deeb214885171eb69a160bae253b615dd22cf0a1dbab6`。
+- 产物：475.9 MB（475,933,315 B）；md5 `ef93e21e9707a742dc2979011f410c74`；
+  sha256 `0c9579fd0f47d57f8ab06670cf184205a31e25d819af917f1bcfb2d3a69b0d5c`
+  （基于 #218 修复后的 `finals/`；早前无 xlsx 修复的构建为 `dcef9f25…`，已作废）。
 - 本机 5060 受控 A/B（同 20 图、同进程、仅切换 cb384 的 tta）：TTA1 61–65ms / TTA2-cb 84–85ms →
   **+20~23ms**；整包单次 smoke 的绝对耗时在 60–85ms 间波动（笔记本 GPU 降频），不作门禁依据。
   按 T4 的 cb384 forward 22.0ms 折算安静态 **≈ 125ms**（dist4 实测 103ms + 一次 cb384 前向），
