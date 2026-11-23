@@ -1,6 +1,7 @@
 """FundusNet：与训练一致的骨干 + 年龄 MLP 融合头（推理侧只依赖 torchvision）。
 
-#215/#216 口径：单解码 draft384 -> **GPU 侧** bbox/裁剪/插值，每成员可配 TTA。
+#221 口径：服务代码回退到 pkg3/dist4 线——CPU 侧 PIL BICUBIC 把视野裁成居中方形并
+缩放到共享 512（utils.preprocess.crop_resize），成员再内插到各自 img_size；TTA 默认 1。
 """
 import numpy as np
 import torch
@@ -60,17 +61,17 @@ class FundusNet(nn.Module):
 
 AGE_MEAN = 58.0
 AGE_STD = 15.0
-MASK_THRESHOLD = 15.0 / 255.0
 
 
 class Ensemble:
-    """3 成员加权概率平均；bbox/裁剪/插值全部在 GPU 上做，CPU 只负责一次 decode。
+    """3 成员加权概率平均（pkg3/dist4 线：共享 512 预处理 + 成员内插）。
 
-    - 输入是单次 draft384 解码得到的整图 batch（B,3,H,W，[0,1]），各成员按自己的
-      cache_size 从**同一份**解码结果上采样裁剪，再插值到 img_size；
-      等价于训练缓存口径「灰度>15 bbox（0.2/99.8 分位）-> 居中方形 -> 缓存档位 -> img_size」。
-    - 每成员按 meta["tta"] 独立做翻转 TTA（#216：cb384 TTA2，两个 small 保持 TTA1），
-      概率先 sigmoid、TTA 内平均，再按权重相加（与 submit_pkg/predict.py 同口径）。
+    - 输入是已预处理的整批张量（B,3,512,512，[0,1]）：裁剪/缩放（灰度>15 bbox
+      （0.2/99.8 分位）-> 居中方形 -> PIL BICUBIC 512）由 CPU 侧 preprocess 完成，
+      这里只按成员 img_size 做双线性内插（与 pkg3 出分包一致）。bbox 按 (x,y)
+      显式求解，非方图不存在 x/y 转置。
+    - 每成员按 meta["tta"] 独立做翻转 TTA（默认 1）；概率先 sigmoid、TTA 内平均，
+      再按权重相加（与 dist3/dist4 出分包同口径）。
     - forward_probs 做前向+sigmoid（计时用 forward），postprocess 只做 CPU 回传（计时用 post）。
     - 年龄入模前按训练口径归一化 (age - 58) / 15（对应 train.py 的 age_tensor）。
     """
@@ -84,45 +85,8 @@ class Ensemble:
         self._mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
         self._std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
 
-    # ---------------------------------------------------------------- GPU 预处理
-    @staticmethod
-    def _boxes(x):
-        """整图 batch -> 每图 (x0, y0, x1, y1)；与训练缓存同一分位口径，在 GPU 上算。"""
-        b, _, h, w = x.shape
-        mask = x.mean(dim=1) > MASK_THRESHOLD
-        boxes = []
-        for i in range(b):
-            m = mask[i]
-            frac = float(m.float().mean())
-            if frac < 0.02 or frac > 0.999:
-                boxes.append((0.0, 0.0, float(w - 1), float(h - 1)))
-                continue
-            idx = m.nonzero(as_tuple=False).float()          # (N,2) -> (y,x)
-            qs = torch.quantile(idx, torch.tensor([0.002, 0.998], device=x.device), dim=0)
-            boxes.append((float(qs[0, 0]), float(qs[0, 1]),
-                          float(qs[1, 0]), float(qs[1, 1])))
-        return boxes
-
-    @staticmethod
-    def _crop(x, boxes, size):
-        """按 bbox 居中方形采样到 (B,3,size,size)；框外补 0（与训练 np.pad 一致）。"""
-        b, _, h, w = x.shape
-        t = torch.linspace(0.0, 1.0, size, device=x.device)
-        grids = []
-        for x0, y0, x1, y1 in boxes:
-            side = max(x1 - x0, y1 - y0) * 1.02
-            cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
-            px = (cx - side * 0.5) + t * side
-            py = (cy - side * 0.5) + t * side
-            gx = (2.0 * px / max(w - 1, 1) - 1.0).view(1, -1).expand(size, size)
-            gy = (2.0 * py / max(h - 1, 1) - 1.0).view(-1, 1).expand(size, size)
-            grids.append(torch.stack([gx, gy], dim=-1))
-        grid = torch.stack(grids, dim=0)                      # (B,size,size,2)
-        return F.grid_sample(x, grid, mode="bilinear", padding_mode="zeros",
-                             align_corners=True)
-
     def forward_probs(self, batch, ages, use_fp16=True):
-        """batch: (B,3,H,W) tensor/numpy，值域 [0,1]（read_one 的单次解码结果）。"""
+        """batch: (B,3,S,S) 预处理后的 tensor/numpy（S=共享缓存 512），值域 [0,1]。"""
         if not torch.is_tensor(batch):
             batch = torch.from_numpy(np.asarray(batch))
         if batch.ndim == 3:
@@ -135,17 +99,13 @@ class Ensemble:
         age = torch.as_tensor(ages, dtype=torch.float32, device=self.device).view(-1, 1)
         age = (age - AGE_MEAN) / AGE_STD
 
-        boxes = self._boxes(batch)
-        crops = {}
         out = None
         with torch.inference_mode():
             for model, meta, w in self.members:
-                cache = int(meta["cache_size"])
-                if cache not in crops:
-                    crops[cache] = self._crop(batch, boxes, cache)
-                xi = crops[cache]
-                if int(meta["img_size"]) != xi.shape[-1]:
-                    xi = F.interpolate(xi, size=(int(meta["img_size"]),) * 2,
+                xi = batch
+                img_size = int(meta["img_size"])
+                if img_size != xi.shape[-1]:
+                    xi = F.interpolate(xi, size=(img_size, img_size),
                                        mode="bilinear", align_corners=False)
                 xi = (xi - self._mean) / self._std
                 xi = xi.contiguous(memory_format=torch.channels_last)

@@ -1,7 +1,8 @@
-"""dist lineage 预处理漂移核对：参考口径（按 cache 分组 draft 解码 + BICUBIC crop）
-vs 出包口径（单次 draft384 解码 + GPU bbox/裁剪 + 双线性下采样）。
+"""dist lineage 预处理漂移核对：参考口径（PIL BICUBIC crop_resize）vs 出包口径。
 
 同一套权重/配比/TTA，只换预处理路径，输出逐图 |Δp| / Spearman / 0.5 翻转数。
+#221 后出包口径已回退到参考口径（共享 512 PIL BICUBIC），本脚本保留作回归对照，
+两者应≈0；若再次出现明显漂移，说明服务代码又被改离 pkg3 线。
 
   python tools/finals_dist_parity.py --images <dir> --meta <csv> [--limit 20]
 """

@@ -52,6 +52,7 @@ sys.path.insert(0, HERE)
 
 from model import Ensemble, FundusNet  # noqa: E402
 from utils import AGE_MEDIAN, clean_age  # noqa: E402
+from utils.preprocess import crop_resize  # noqa: E402
 from utils.weights import load_checkpoint  # noqa: E402
 
 
@@ -66,14 +67,17 @@ COST_SEED = 2026         # 阶段一抽样随机种子
 
 # 选手配置（固定, 不从命令行传入）
 # 3 成员 = 区域赛锁定配比 0.5/0.25/0.25（平台 ID 32301 / LB 98.72）+ TTA1（#215 定稿）。
-# 预处理：**单次 draft384 解码**，bbox/裁剪/插值全部在 GPU 上做（#211 dist3/dist4 lineage）。
-# cache_size/img_size 是训练口径，slim 权重内嵌元数据不可靠（ra 写成 512），由
-# model/members.json 显式覆盖；tta 为每成员独立配置（#216：仅 cb384 用 TTA2）。
+# 预处理（#221 回退到 pkg3/dist4 线）：单次 draft384 解码后，CPU 侧 PIL BICUBIC 把视野
+# bbox（gray>15, 0.2/99.8 分位）裁成居中方形并缩放到**共享 512**；各成员再在 Ensemble
+# 内双线性内插到自己的 img_size。bbox 按 (x,y) 显式求解，非方图不存在 x/y 转置。
+# img_size 是训练口径，slim 权重内嵌元数据不可靠（ra 写成 512），由
+# model/members.json 显式覆盖；tta 为每成员独立配置（#216：仅 cb384 可用 TTA2）。
 DRAFT_TARGET = 384
+SHARED_CACHE = 512
 MEMBERS = [
     ("cb384.pt", 0.50, 512, 384, 1),
-    ("cs_hi512_all_fp16.pt", 0.25, 768, 512, 1),
-    ("cs_hi512_all_ra.pt", 0.25, 768, 512, 1),
+    ("cs_hi512_all_fp16.pt", 0.25, 512, 512, 1),
+    ("cs_hi512_all_ra.pt", 0.25, 512, 512, 1),
 ]
 CACHE_BY_FILE = {m[0]: m[2] for m in MEMBERS}
 IMG_BY_FILE = {m[0]: m[3] for m in MEMBERS}
@@ -90,8 +94,9 @@ TTA_BY_FILE = {m[0]: m[4] for m in MEMBERS}
 
 def _read_members(model_dir):
     """model/members.json 覆盖默认成员表：
-    {"members":[{"file":..., "weight":..., "cache_size": 512|768,
-                 "img_size": 384|512, "tta": 1|2}]}"""
+    {"members":[{"file":..., "weight":..., "cache_size": 512,
+                 "img_size": 384|512, "tta": 1|2}]}
+    cache_size 为历史字段（#221 后预处理统一共享 512），保留仅为兼容/日志。"""
     p = os.path.join(model_dir, "members.json")
     if not os.path.isfile(p):
         return None
@@ -127,30 +132,81 @@ def load_model(device):
     return Ensemble(loaded, device=device)
 
 
+def _prep_rgb(arr_rgb):
+    """RGB HWC uint8 -> (3,SHARED_CACHE,SHARED_CACHE) float32 [0,1] numpy。
+
+    与 pkg3/dist4 出分包同一裁剪口径：灰度>15 bbox（0.2/99.8 分位）-> 居中方形
+    -> PIL BICUBIC 到共享 512（utils.preprocess.crop_resize）。"""
+    arr = np.asarray(arr_rgb)
+    if arr.dtype != np.uint8:
+        scale = 255.0 if float(arr.max()) <= 1.001 else 1.0
+        arr = np.clip(np.rint(arr * scale), 0, 255).astype(np.uint8)
+    arr = np.ascontiguousarray(arr)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        raise ValueError(f"expect HxWx3 RGB image, got {arr.shape}")
+    return crop_resize(Image.fromarray(arr), arr, SHARED_CACHE).numpy()
+
+
 def preprocess(img_bgr):
-    """单张图预处理: BGR HWC uint8 -> (3,H,W) float32 [0,1] numpy。
-    只做 BGR->RGB 与 dtype 转换；bbox/裁剪/插值在 predict_batch 内由 GPU 完成。"""
+    """单张图预处理: BGR HWC uint8 -> (3,512,512) float32 [0,1] numpy。
+    只做 BGR->RGB 后走 pkg3 裁剪口径；成员内插在 Ensemble 内完成。"""
     arr = np.asarray(img_bgr)
     if arr.ndim != 3 or arr.shape[2] != 3:
         raise ValueError(f"expect HxWx3 BGR image, got {arr.shape}")
-    return np.ascontiguousarray(arr[..., ::-1].transpose(2, 0, 1), dtype=np.float32) / 255.0
+    return _prep_rgb(arr[..., ::-1])
+
+
+def _to_prepped(batch):
+    """把 predict_batch 的输入统一成 (B,3,512,512) float32 CPU tensor。
+
+    - 已预处理 (B,3,512,512) float: 原样使用；
+    - (B,H,W,3) uint8（read_one 的 RGB 解码结果）: 逐图按 pkg3 口径裁剪到共享 512；
+    - (B,3,H,W) float [0,1]（其他调用方）: 还原成 HWC uint8 再裁剪。
+    """
+    if torch.is_tensor(batch):
+        t = batch.detach().cpu()
+        if t.ndim == 3:
+            t = t.unsqueeze(0)
+        if t.shape[1] == 3 and t.shape[-1] == SHARED_CACHE:
+            return t.float()
+        arr = t.numpy()
+    else:
+        arr = np.asarray(batch)
+        if arr.ndim == 3:
+            arr = arr[None]
+        if arr.ndim != 4:
+            raise ValueError(f"expect 4D batch, got {arr.shape}")
+        if arr.shape[1] == 3 and arr.shape[-1] == SHARED_CACHE and arr.dtype != np.uint8:
+            return torch.from_numpy(arr).float()
+    if arr.shape[-1] == 3:                                    # (B,H,W,3), uint8 或 float[0,1]
+        rows = []
+        for a in arr:
+            if a.dtype != np.uint8:
+                a = np.clip(np.rint(a * 255.0), 0, 255).astype(np.uint8)
+            rows.append(torch.from_numpy(_prep_rgb(a)))
+        return torch.stack(rows)
+    if arr.shape[1] == 3:                                     # (B,3,H,W) float [0,1]
+        rows = []
+        for a in arr:
+            hwc = np.clip(np.rint(a.transpose(1, 2, 0) * 255.0), 0, 255).astype(np.uint8)
+            rows.append(torch.from_numpy(_prep_rgb(hwc)))
+        return torch.stack(rows)
+    raise ValueError(f"unsupported batch {arr.shape} / dtype {arr.dtype}")
 
 
 def predict_batch(model, batch, device, use_fp16, meta_rows=None):
     """对一个 batch 推理（含预处理与后处理）。
-    batch: (B,H,W,3) uint8 或 (B,3,H,W) float [0,1] tensor/numpy —— 单次 draft384 解码结果。
+    batch: (B,H,W,3) uint8（read_one 的单次 draft384 解码结果）或已按共享 512
+    预处理的 (B,3,512,512) float [0,1]；这里统一裁剪到共享 512 后交给 Ensemble。
     meta_rows: 与 batch 逐行对齐的 list[dict]（取 Age）。
     返回长度 B 的 float32 numpy 数组, 取值 [0, 1]。"""
-    if isinstance(batch, torch.Tensor):
-        n = batch.shape[0] if batch.ndim == 4 else 1
-    else:
-        arr = np.asarray(batch)
-        n = arr.shape[0] if arr.ndim == 4 else 1
+    x = _to_prepped(batch)
+    n = x.shape[0]
     if meta_rows is None:
         ages = [AGE_MEDIAN] * n
     else:
         ages = [clean_age(r.get("Age", AGE_MEDIAN)) for r in meta_rows]
-    return model.predict(batch, ages, use_fp16=use_fp16)
+    return model.predict(x, ages, use_fp16=use_fp16)
 
 
 # ======================================================================
@@ -218,7 +274,7 @@ def resolve_image(name, data_root, index):
 
 def read_one(path):
     """读图: PIL draft(384) 单次解码 -> HWC uint8 RGB; 失败返回 None。
-    bbox/裁剪/插值全部交给 GPU（predict_batch 内），与 dist3/dist4 出分包一致。"""
+    裁剪/缩放由 predict_batch 按 pkg3 口径在 CPU 上完成（共享 512, PIL BICUBIC）。"""
     try:
         with Image.open(str(path)) as im:
             im.draft("RGB", (DRAFT_TARGET, DRAFT_TARGET))
