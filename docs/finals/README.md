@@ -36,47 +36,45 @@
 
 （仓库 `dongmingkun/glaucoma_first`；完整哈希见包内 `SHA256SUMS.txt` 与 `SHA256SUMS_weights.txt`。）
 
-## 成员与预处理（dist4 口径）
+## 成员与预处理（#221 后服务口径：pkg3/dist4 线）
 
-| 成员 | 权重 | arch / img_size | cache 档位 | tta | 训练范围 |
+| 成员 | 权重 | arch / img_size | 共享 cache | tta | 训练范围 |
 |---|---|---|---|---|---|
 | `cb384.pt` | 0.50 | convnext_base / 384 | 512 | 1 | train-only |
-| `cs_hi512_all_fp16.pt` | 0.25 | convnext_small / 512 | 768 | 1 | train+all |
-| `cs_hi512_all_ra.pt` | 0.25 | convnext_small / 512 | 768 | 1 | train+all + RA |
+| `cs_hi512_all_fp16.pt` | 0.25 | convnext_small / 512 | 512 | 1 | train+all |
+| `cs_hi512_all_ra.pt` | 0.25 | convnext_small / 512 | 512 | 1 | train+all + RA |
 
 - 配比来源：平台 ID 32301（2026-11-05，LB 98.72，0.5/0.25/0.25）。
-- **单次解码**：每张图只 `Image.draft(384)` 解码一次；bbox（灰度>15，0.2/99.8 分位）、
-  居中方形裁剪（side × 1.02）、按 cache 档位上采样、再插值到 img_size **全部在 GPU 上做**
-  （`F.grid_sample`，`padding_mode="zeros"`）。这是 dist3/dist4 的服务口径，也是 103ms / 87.19 的来源。
-- 集成为**逐成员 sigmoid 概率 + TTA 平均 + 加权平均**（与 `submit_pkg/predict.py` 同口径）；
+- **单次解码 + CPU 侧 pkg3 裁剪**：每张图只 `Image.draft(384)` 解码一次；bbox（灰度>15，
+  0.2/99.8 分位）、居中方形裁剪（side × 1.02）与 PIL **BICUBIC 缩放到共享 512** 在 CPU 上
+  按 `(x, y)` 显式计算（`utils.preprocess.crop_resize`，与 pkg3 出包同源）；各成员再在
+  Ensemble 内双线性内插到自己的 `img_size`。**非方图不存在 x/y 转置**（#221 根因）。
+- 集成为**逐成员 sigmoid 概率 + TTA 平均 + 加权平均**（与 dist3/dist4 出分包同口径）；
   年龄按训练口径 `(age-58)/15` 归一化。
-- `members.json` 显式覆盖 slim 权重不可靠的元数据（`cs_hi512_all_ra.pt` 内嵌 `cache_size=512`）。
+- `members.json` 保留 `cache_size` 字段（历史兼容/日志）；#221 后预处理统一共享 512。
+- 线上对照：dist4（87.19/0.9912）为 GPU 裁剪线，方图行为可对齐；非方图按其 `_boxes`
+  转置实现会裁错（#221 实测 mean|Δp| 0.019~0.084），本口径为修正后行为。
 
-## 与参考分组口径的漂移（单解码代价）
+## 预处理 parity 门禁（#221）
 
-同一套权重/配比/TTA，只把预处理从「按 cache 分组 draft768/1152 解码 + numpy BICUBIC 裁剪」
-换成「单解码 draft384 + GPU 裁剪/双线性」，20 图对比（`tools/finals_dist_parity.py`）：
-
-| 图集 | 尺寸 | max\|Δp\| | mean\|Δp\| | Spearman | 0.5 翻转 |
-|---|---|---|---|---|---|
-| smoke/imgs | 1024² | 0.00021 | 0.00017 | 1.00000 | 0 |
-| smoke/big20 | 2048² | 0.0535 | 0.0150 | 0.98496 | 0 |
-
-- 小图（真实眼底常见尺寸）几乎无差异；2048² 合成压力档的漂移即单解码省掉一整套
-  draft1152 解码的代价，与 dist3（87.13）/ dist4（87.19）线上结果一致，可接受。
+`tools/finals_prep_parity.py` 以 **frozen pkg3 参照实现**（`ed6bda3` 的 `crop_resize`
+逐行拷贝）对照包内服务代码，覆盖方图 + 非方图 fixture，门槛 **mean|Δp| ≤ 0.005、0 个
+0.5 翻转**；同时把 merged-main 的转置实现作为**回归演示**跑红非方图。
+详见 [PARITY_221.md](PARITY_221.md)。
 
 ## 三接口（与官方模板逐行对齐）
 
 ```python
 load_model(device)                                              # -> Ensemble（已 eval）
-preprocess(img_bgr)                                             # BGR ndarray -> (3,H,W) float32 numpy, [0,1]
+preprocess(img_bgr)                                             # BGR -> (3,512,512) float32 numpy, [0,1]（含 pkg3 裁剪）
 predict_batch(model, batch, device, use_fp16, meta_rows=None)   # -> np.ndarray 概率
 ```
 
 - 框架侧 `read_one` 用 PIL `draft(384)` 单次解码（不依赖 cv2），把整图交给 `predict_batch`；
-  `preprocess` 只做 BGR→RGB 与 dtype 转换，供外部 runner 直接调用。
-- `predict_batch` 接受 `(B,H,W,3)` uint8 或 `(B,3,H,W)` float（单张 3 维亦可），
-  内部调用 `Ensemble.forward_probs`（GPU 预处理 + 前向 + TTA + 加权概率）与 `postprocess`。
+  `preprocess` 做 BGR→RGB + pkg3 裁剪（共享 512），供外部 runner 直接调用。
+- `predict_batch` 接受 `(B,H,W,3)` uint8（draft 解码结果）或已按共享 512 预处理的
+  `(B,3,512,512)` float；raw 输入内部逐图 `crop_resize` 到共享 512，再调用
+  `Ensemble.forward_probs`（成员内插 + 前向 + TTA + 加权概率）与 `postprocess`。
 - cost 计时的 forward/post 与全量预测走同一函数；`run_cost` 的抽样/预热/计时口径与官方模板一致。
 
 
@@ -105,6 +103,8 @@ python code/predict_and_cost.py \
   本仓库无原始产物（无 Docker/无历史 zip），只能重建到「同 lineage、同体积、同配比」，
   md5 不可复现；以线上 md5 为准。
 - 2 成员版（276.3 MB，md5 `5307878e`）仅作降耗备选，未取得线上验证。
+- ⚠️ **#221 代码修复后需重新出包**：`model.py`/`predict_and_cost.py`/`members.json`
+  已变更，上述 zip 哈希作废；重打包（`tools/finals_build_pkg.py`）后回填体积与 md5/sha256。
 
 ## #216 彩票包（TTA2-cb）
 
